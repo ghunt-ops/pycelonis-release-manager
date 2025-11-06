@@ -1,34 +1,16 @@
+# --- 🛠️ Core API Functions ---
 import os
-import logging
 import uuid
+import logging
 from typing import Any, Dict, Optional, Union
-
-# PyCelonis Imports
-from pycelonis import get_celonis
 from pycelonis.service.package_manager.service import ContentNodeTransport
 from pycelonis_core.base.base_model import PyCelonisBaseModel
 from pycelonis_core.client.client import Client
 from pycelonis_core.utils.ml_workbench import TRACKING_LOGGER
-
-# --- 🎯 User Configuration ---
-SOURCE_TEAM_URL = 'https://3lko227e-2024-06-12.training.celonis.cloud/'
-SOURCE_API_KEY = 'M2VjNDUxY2YtZjJjYS00OGNmLThlMjItMTM1NzgwNGMyNzUxOlRXdlVYWHdndFQ0dG1lQXRLQUh6WkZkL09LWDdxQThHbEdQWTZYdk14QlFX'
-KEY_TYPE = 'USER_KEY'
-SPACE_ID = "dcba7a38-50f0-4fcb-9eb3-d87a2a014803"
-ORIGINAL_PACKAGE_KEY = "83173426_c3bd_48c5_8b68_cb15b2dccfa6"
-TEAM_DOMAIN = "3lko227e-2024-06-12" # Extracted from URL for payload reuse
+from pycelonis import get_celonis
 
 # Set up logger
 logger = logging.getLogger(TRACKING_LOGGER)
-JsonNode = Any
-
-# --- 🔑 Environment Setup ---
-# Setting environment variables for pycelonis.get_celonis()
-os.environ['CELONIS_URL'] = SOURCE_TEAM_URL
-os.environ['CELONIS_API_TOKEN'] = SOURCE_API_KEY
-os.environ['CELONIS_KEY_TYPE'] = KEY_TYPE
-
-# --- 🛠️ Core API Functions ---
 
 def _handle_validation_params(validate_: Optional[Union['bool', Dict[Any, Any], PyCelonisBaseModel]]) -> Dict[str, Any]:
     """Helper function to standardize validation parameter handling."""
@@ -109,6 +91,11 @@ def get_or_create_package(space, package_name: str, packages) -> Any:
     try:
         package = packages.find(package_name, "name")
         logger.info(f"Found existing package: {package_name}")
+        try:
+            package.publish()
+            logger.info(f"Published existing package: {package_name}")
+        except Exception as e:
+            logger.warning(f"Could not publish existing package: {package_name}. Error: {e}")
     except:
         logger.info(f"Package {package_name} not found. Creating a new one.")
         # Use a consistent description
@@ -126,7 +113,7 @@ def get_or_create_package(space, package_name: str, packages) -> Any:
         logger.info(f"Created and published new package: {package_name}")
     return package
 
-def create_copy_payload(source_package: Any, destination_package: Any, new_name: str) -> Dict[str, Any]:
+def create_copy_payload(TEAM_DOMAIN: str, source_package: Any, destination_package: Any, new_name: str) -> Dict[str, Any]:
     """Creates the request body payload for the package copy API."""
     return { 
         "nodeId": source_package.id,
@@ -143,92 +130,80 @@ def create_copy_payload(source_package: Any, destination_package: Any, new_name:
 def hide_package_assets(client: Client, package: Any):
     """Hides all views within a package and publishes."""
     logger.info(f"Hiding views in package: {package.name}")
-    assets = package.get_views()
-    visibility_json = [{"id": asset.id, "hide": True} for asset in assets]
+    assets = package.get_content_nodes()
 
-    put_api_hide_assets(
-        client, 
-        visibility_json, 
-        package.identifier, 
-        {"flavor": "STUDIO"}
-    )
+    for asset in assets:
+        logger.debug(f"Asset before hiding: ID={asset.id}, Name={asset.name}")
+        visibility_json = [{"id": asset.id, "hide": True}]
+        try:
+            put_api_hide_assets(
+                client, 
+                visibility_json, 
+                package.identifier, 
+                {"flavor": "STUDIO"}
+            )
+            logger.debug(f"Successfully hid asset: ID={asset.id}, Name={asset.name}")
+        except Exception as e:
+            logger.error(f"Failed to hide asset: ID={asset.id}, Name={asset.name}. Error: {e}")
+
     # The original script published the package after hiding assets, which is good practice
     package.publish()
-    logger.info(f"Hidden all views and published package: {package.name}")
+    logger.info(f"Hidden all assets and published package: {package.name}")
 
 
-# --- 🏃 Main Execution ---
+def setup_celonis_environment(source_url: str, api_key: str, key_type: str):
+    """
+    Sets the required environment variables for pycelonis.get_celonis().
 
-# 1. Connect to Celonis
-celonis = get_celonis(permissions=False)
-client = celonis.client # Store client for API calls
+    Args:
+        source_url (str): The Celonis Team URL.
+        api_key (str): The Celonis API Token.
+        key_type (str): The Celonis Key Type.
+    """
+    os.environ['CELONIS_URL'] = source_url
+    os.environ['CELONIS_API_TOKEN'] = api_key
+    os.environ['CELONIS_KEY_TYPE'] = key_type
+    logger.info("Celonis environment variables set.")
 
-# 2. Access Space and Packages
-space = celonis.studio.get_space(SPACE_ID)
-packages = space.get_packages()
-production_package = packages.find(ORIGINAL_PACKAGE_KEY, "key")
-logger.info(f"Found Production Package: {production_package.name}")
+def connect_to_celonis_and_get_package(space_id: str, package_key: str):
+    """
+    Connects to Celonis, retrieves the specified Studio Space, and finds 
+    the production package within it.
 
-# 3. Define Names for Development and Testing
-# Creating a clean base name
-base_name = production_package.name.replace(" ", "_")
-DEVELOPMENT_PACKAGE_NAME = f"DEVELOPMENT_{base_name}"
-TESTING_PACKAGE_NAME = f"TESTING_{base_name}"
-logger.info(f"Development Package Name: {DEVELOPMENT_PACKAGE_NAME}")
-logger.info(f"Testing Package Name: {TESTING_PACKAGE_NAME}")
+    Args:
+        space_id (str): The ID of the Studio Space.
+        package_key (str): The key of the original production package.
 
-# 4. Create or Get Packages
-# Replaced try/except with a reusable function
-development_package = get_or_create_package(space, DEVELOPMENT_PACKAGE_NAME, packages)
-testing_package = get_or_create_package(space, TESTING_PACKAGE_NAME, packages)
+    Returns:
+        tuple: A tuple containing (celonis_connection, client, production_package).
+    """
+    # 1. Connect to Celonis
+    # Permissions=False often prevents unnecessary scope/permission checks on startup
+    celonis = get_celonis(permissions=False)
+    client = celonis.client # Store client for API calls
 
-# 5. Copy Production Package to Development
-development_request_payload = create_copy_payload(
-    production_package, 
-    development_package, 
-    DEVELOPMENT_PACKAGE_NAME
-)
+    # 2. Access Space and Packages
+    space = celonis.studio.get_space(space_id)
+    packages = space.get_packages()
+    production_package = packages.find(package_key, "key")
+    logger.info(f"Found Production Package: {production_package.name}")
 
-logger.info("Copying Production Package to Development...")
-post_api_copy_package(
-    client, 
-    development_request_payload, 
-    production_package.id, # The source ID is used in the URL for the copy API
-    {"flavor": "STUDIO"}
-)
+    return celonis, client, space, packages, production_package
 
-# 6. Hide Views and Publish Development Package
-# Must sync/refetch after copy to get updated development package contents
-space.sync()
-packages = space.get_packages()
-development_package = packages.find(DEVELOPMENT_PACKAGE_NAME, "name")
+def generate_package_names(original_name: str) -> tuple[str, str]:
+    """
+    Creates standardized development and testing package names based on the 
+    original package name.
 
-hide_package_assets(client, development_package)
+    Args:
+        original_name (str): The name of the original production package.
 
-
-# 7. Copy Development Package to Testing
-# Must sync/refetch after hiding/publishing to ensure the development package is up-to-date
-space.sync()
-packages = space.get_packages()
-development_package = packages.find(DEVELOPMENT_PACKAGE_NAME, "name") # Get the latest version
-
-testing_request_payload = create_copy_payload(
-    development_package, 
-    testing_package, 
-    TESTING_PACKAGE_NAME
-)
-
-logger.info("Copying Development Package to Testing...")
-post_api_copy_package(
-    client, 
-    testing_request_payload, 
-    development_package.id, # The source ID is used in the URL for the copy API
-    {"flavor": "STUDIO"}
-)
-
-# 8. Final Publish of Testing Package
-space.sync()
-packages = space.get_packages()
-testing_package = packages.find(TESTING_PACKAGE_NAME, "name")
-testing_package.publish()
-logger.info("Published final Testing Package.")
+    Returns:
+        tuple[str, str]: A tuple containing (dev_package_name, test_package_name).
+    """
+    # Creating a clean base name
+    base_name = original_name.replace(" ", "_")
+    development_package_name = f"DEVELOPMENT_{base_name}"
+    testing_package_name = f"TESTING_{base_name}"
+    logger.info(f"Generated names: Dev={development_package_name}, Test={testing_package_name}")
+    return development_package_name, testing_package_name
