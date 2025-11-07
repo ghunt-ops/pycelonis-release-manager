@@ -12,7 +12,7 @@ git clone https://github.com/ghunt-ops/celonis_release_management.git
 ```
 
 ## 📖 Usage
-Open the main_file.IPYNB file and follow the documented steps.
+Open the quickstart.IPYNB file and follow the documented steps.
 
 ## 📄 License
 This project is licensed under the Apache License - see the LICENSE file for details.

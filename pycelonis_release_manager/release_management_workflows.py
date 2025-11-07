@@ -1,10 +1,9 @@
 # Import Modules
-import logging
 from typing import Any
 
 # PyCelonis Imports
 from pycelonis_core.utils.ml_workbench import TRACKING_LOGGER
-from release_management_functions import *
+from pycelonis_release_manager.release_management_functions import *
 
 def workflow_create_development_and_testing_packages_from_production(client: Any, space: Any, packages: Any, production_package: Any, DEVELOPMENT_PACKAGE_NAME: str, TESTING_PACKAGE_NAME: str, TEAM_DOMAIN: str):
 
